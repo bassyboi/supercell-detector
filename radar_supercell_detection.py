@@ -2,28 +2,34 @@
 
 import os
 import time
+import datetime
+import logging
 import requests
 import cv2
 import numpy as np
 from PIL import Image
 import torch
-import datetime
 
-def download_bom_radar_image(save_path: str, radar_url: str):
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+
+def download_bom_radar_image(save_path: str, radar_url: str, timeout: int = 10) -> None:
     """
     Downloads a single radar image from BOM's web server.
     :param save_path: Where to save the downloaded image.
     :param radar_url: URL to the BOM radar image.
+    :param timeout: Request timeout in seconds.
     """
-    print(f"Downloading radar image from {radar_url}...")
-    response = requests.get(radar_url, stream=True)
+    logging.info(f"Downloading radar image from {radar_url}...")
+    response = requests.get(radar_url, stream=True, timeout=timeout)
     if response.status_code == 200:
         with open(save_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        print(f"Radar image saved to {save_path}.")
+        logging.info(f"Radar image saved to {save_path}.")
     else:
-        print(f"Failed to download. Status code: {response.status_code}")
+        logging.error(f"Failed to download. Status code: {response.status_code}")
+
 
 def load_image_as_cv2(image_path: str) -> np.ndarray:
     """
@@ -31,12 +37,12 @@ def load_image_as_cv2(image_path: str) -> np.ndarray:
     :param image_path: Path to the image on disk.
     :return: OpenCV-compatible image (numpy array in BGR format).
     """
-    pil_image = Image.open(image_path)
-    # Convert PIL image to a numpy array (RGB)
-    image_np = np.array(pil_image)
+    with Image.open(image_path) as pil_image:
+        # Convert PIL image to a numpy array (RGB)
+        image_np = np.array(pil_image)
     # Convert RGB to BGR
-    image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-    return image_bgr
+    return cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+
 
 def detect_supercell(image_bgr: np.ndarray, model, conf_threshold: float = 0.25):
     """
@@ -60,7 +66,8 @@ def detect_supercell(image_bgr: np.ndarray, model, conf_threshold: float = 0.25)
 
     return filtered
 
-def draw_detections(image_bgr: np.ndarray, detections, class_names: dict):
+
+def draw_detections(image_bgr: np.ndarray, detections, class_names: dict) -> np.ndarray:
     """
     Draw bounding boxes for each detected supercell (or other classes) on the image.
     :param image_bgr: The image (BGR).
@@ -71,7 +78,14 @@ def draw_detections(image_bgr: np.ndarray, detections, class_names: dict):
     for (box, conf, cls_id) in detections:
         x1, y1, x2, y2 = map(int, box)
         label = class_names.get(int(cls_id), "Unknown")
-        color = (0, 0, 255) if label == "supercell" else (255, 0, 0)
+        # Color-code bounding boxes based on label
+        if label == "supercell":
+            color = (0, 0, 255)  # Red
+        elif label == "storm":
+            color = (0, 255, 255)  # Yellow
+        else:
+            color = (255, 0, 0)    # Blue
+        
         cv2.rectangle(image_bgr, (x1, y1), (x2, y2), color, 2)
         cv2.putText(
             image_bgr,
@@ -84,58 +98,45 @@ def draw_detections(image_bgr: np.ndarray, detections, class_names: dict):
         )
     return image_bgr
 
+
 def main_loop():
     """
-    Continuously downloads the latest BOM radar image, runs supercell detection, 
+    Continuously downloads the latest BOM radar image, runs supercell detection,
     and saves annotated images at a fixed time interval.
     """
 
     # ---------------------------
     # 1. SETUP - Modify as needed
     # ---------------------------
-    # Replace with an actual BOM radar image link, ensuring you have correct permissions.
     radar_image_url = "https://example.com/path/to/bom_radar_image.png"
-    
-    # This directory will store the raw downloaded images and annotated images
     output_dir = "radar_images"
     os.makedirs(output_dir, exist_ok=True)
 
-    # YOLO model path (must be a model trained/fine-tuned for your radar data).
-    # This example uses a YOLOv5 PyTorch model from Ultralytics.
     model_path = "yolo/best.pt"
-
-    # Class names for your model (assuming 0 is "supercell", 1 is "storm", etc.)
     class_names = {
         0: "supercell",
         1: "storm",
         2: "rainband",
-        # ...
     }
 
-    # Confidence threshold
     conf_threshold = 0.30
+    scan_interval_seconds = 300  # e.g., 5 minutes
 
     # ------------------------------------
     # 2. LOAD MODEL (only once!)
     # ------------------------------------
-    print("Loading YOLO model...")
+    logging.info("Loading YOLO model...")
     model = torch.hub.load('ultralytics/yolov5', 'custom', path=model_path, force_reload=True)
-    print("YOLO model loaded.")
+    logging.info("YOLO model loaded.")
 
     # ------------------------------------
     # 3. CONTINUOUS LOOP
     # ------------------------------------
-    scan_interval_seconds = 300  # e.g., 5 minutes
-
     while True:
         try:
-            # Timestamp to differentiate saved images
             timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            
-            # Raw radar image path
+
             downloaded_image_path = os.path.join(output_dir, f"radar_{timestamp_str}.png")
-            
-            # Annotated image path
             annotated_image_path = os.path.join(output_dir, f"annotated_radar_{timestamp_str}.png")
 
             # -----------------------
@@ -158,22 +159,14 @@ def main_loop():
             # Save the annotated image
             # -----------------------
             cv2.imwrite(annotated_image_path, image_with_boxes)
-            print(f"Annotated image saved to {annotated_image_path}")
+            logging.info(f"Annotated image saved to {annotated_image_path}")
 
-            # If desired, you can show the result in a window
-            # (Comment out if running on a headless server without a GUI)
-            # cv2.imshow("Supercell Detection", image_with_boxes)
-            # cv2.waitKey(1000)
-            # cv2.destroyAllWindows()
-        
         except Exception as e:
-            print(f"An error occurred: {e}")
+            logging.error(f"An error occurred: {e}", exc_info=True)
 
-        # -----------------------
-        # Wait for the next scan
-        # -----------------------
-        print(f"Waiting {scan_interval_seconds} seconds until next scan...\n")
+        logging.info(f"Waiting {scan_interval_seconds} seconds until next scan...\n")
         time.sleep(scan_interval_seconds)
+
 
 if __name__ == "__main__":
     main_loop()
