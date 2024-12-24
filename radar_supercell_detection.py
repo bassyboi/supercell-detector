@@ -13,7 +13,6 @@ from bs4 import BeautifulSoup
 import tkinter as tk
 from tkinter import filedialog
 
-
 def scrape_bom_radar_image(url: str) -> str:
     """
     Scrapes the BOM radar loop page for the most recent radar image URL.
@@ -118,7 +117,7 @@ def load_image_as_cv2(image_path: str) -> np.ndarray:
 
 def detect_supercell(image_bgr: np.ndarray, model, conf_threshold: float = 0.25):
     """
-    Runs the YOLO model on a radar image to locate supercells (or any target classes).
+    Runs the YOLO model on a radar image to locate targets (echo hook, shower, storm cell, supercell).
     Returns a list of detections or an empty list if none are found.
     """
     if image_bgr is None:
@@ -153,8 +152,19 @@ def draw_detections(image_bgr: np.ndarray, detections, class_names: dict):
         for (box, conf, cls_id) in detections:
             x1, y1, x2, y2 = map(int, box)
             label = class_names.get(int(cls_id), "Unknown")
-            # Example color scheme
-            color = (0, 0, 255) if label == "supercell" else (255, 0, 0)
+            
+            # Assign a color for each label (you can customize as needed)
+            if label == "echo hook":
+                color = (255, 255, 0)   # cyan
+            elif label == "shower":
+                color = (0, 255, 255)  # yellow
+            elif label == "storm cell":
+                color = (255, 0, 0)    # blue
+            elif label == "supercell":
+                color = (0, 0, 255)    # red
+            else:
+                color = (255, 255, 255)  # white (unknown)
+
             cv2.rectangle(image_bgr, (x1, y1), (x2, y2), color, 2)
             cv2.putText(
                 image_bgr,
@@ -197,7 +207,12 @@ def get_model_path_via_tkinter() -> str:
 def main_loop():
     """
     Continuously fetches the latest BOM radar image from IDR193.loop.shtml, 
-    runs supercell detection, and saves annotated images.
+    runs detection on the classes:
+        - echo hook
+        - shower
+        - storm cell
+        - supercell
+    and saves annotated images.
     Incorporates error handling and uses tkinter to select a .pt model.
     """
     # URL for the IDR193 radar loop page
@@ -213,18 +228,25 @@ def main_loop():
         print("No model path provided. Exiting.")
         return
     
-    # Example class names
+    # Define your class names for the 4 classes
     class_names = {
-        0: "supercell",
-        1: "storm",
-        2: "rainband",
+        0: "echo hook",
+        1: "shower",
+        2: "storm cell",
+        3: "supercell",
     }
     conf_threshold = 0.30
 
     # Load YOLO model once
     print("Loading YOLO model...")
     try:
-        model = torch.hub.load('ultralytics/yolov5', 'custom', path=model_path, force_reload=True)
+        # Using YOLOv5 from ultralytics
+        model = torch.hub.load(
+            'ultralytics/yolov5', 
+            'custom', 
+            path=model_path, 
+            force_reload=True
+        )
         print("YOLO model loaded.")
     except Exception as e:
         print(f"Failed to load model from {model_path}: {e}")
@@ -247,7 +269,7 @@ def main_loop():
                 
                 success = download_image(downloaded_image_path, latest_image_url)
                 if success:
-                    # 3. Detect supercells
+                    # 3. Detect classes in the image
                     image_bgr = load_image_as_cv2(downloaded_image_path)
                     detections = detect_supercell(image_bgr, model, conf_threshold)
 
