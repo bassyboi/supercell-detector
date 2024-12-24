@@ -2,8 +2,9 @@
 #
 # run.sh
 #
-# This script activates the supercell_env virtual environment and
-# runs the BOM radar supercell detection Python script.
+# This script activates the supercell_env virtual environment,
+# runs the radar_supercell_detection.py script, and then
+# drops you into a shell for troubleshooting (still inside the venv).
 #
 # Usage:
 #   chmod +x run.sh
@@ -27,5 +28,10 @@ source "$ENV_DIR/bin/activate"
 echo "Running $SCRIPT_NAME..."
 python "$SCRIPT_NAME"
 
-# 4. (Optional) Deactivate the environment when done
-# deactivate
+# 4. Drop into a shell for troubleshooting (still in the activated venv)
+echo ""
+echo "================================================="
+echo "The script has finished, but the venv is still active."
+echo "Type 'exit' when you are finished troubleshooting."
+echo "================================================="
+exec $SHELL
