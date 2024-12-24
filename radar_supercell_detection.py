@@ -1,91 +1,110 @@
 #!/usr/bin/env python3
 
 import os
+import re
 import time
-import datetime
-import logging
 import requests
 import cv2
 import numpy as np
 from PIL import Image
 import torch
+import datetime
+from bs4 import BeautifulSoup
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+def scrape_bom_radar_image(url: str) -> str:
+    """
+    Scrapes the BOM radar loop page for the most recent radar image URL.
+    Returns the absolute URL to the image, or None if not found.
+    """
+    print(f"Scraping BOM radar loop page: {url}")
+    response = requests.get(url)
+    if response.status_code != 200:
+        print(f"Failed to access page. Status code: {response.status_code}")
+        return None
 
-def download_bom_radar_image(save_path: str, radar_url: str, timeout: int = 10) -> None:
+    # Parse HTML
+    soup = BeautifulSoup(response.text, "html.parser")
+    
+    # Example: search for lines like /radar/IDR193.T.202308100927.png
+    # or script blocks containing a var imageList = [...]
+    # We'll do a simple approach: find all <script> blocks with "IDR193"
+    script_tags = soup.find_all("script")
+
+    # This regex aims to find something like /radar/IDR193.T.202308100927.png
+    pattern = re.compile(r'(/radar/IDR193[^"]+\.png)')
+
+    found_images = []
+    for tag in script_tags:
+        if tag.string and "IDR193" in tag.string:
+            matches = pattern.findall(tag.string)
+            if matches:
+                found_images.extend(matches)
+
+    if not found_images:
+        print("No IDR193 image paths found in the page scripts.")
+        return None
+    
+    # The frames are often in chronological order. 
+    # The last entry is typically the most recent.
+    latest_path = found_images[-1]
+
+    # The BOM site usually uses relative paths like /radar/IDR193.T.yyyymmddHHMM.png
+    # Prepend domain if not already present
+    if latest_path.startswith("/"):
+        latest_url = f"http://www.bom.gov.au{latest_path}"
+    else:
+        # If it's absolute or something else
+        latest_url = latest_path
+    
+    print(f"Found latest radar image: {latest_url}")
+    return latest_url
+
+def download_image(save_path: str, image_url: str):
     """
-    Downloads a single radar image from BOM's web server.
-    :param save_path: Where to save the downloaded image.
-    :param radar_url: URL to the BOM radar image.
-    :param timeout: Request timeout in seconds.
+    Downloads an image from the provided URL to save_path.
     """
-    logging.info(f"Downloading radar image from {radar_url}...")
-    response = requests.get(radar_url, stream=True, timeout=timeout)
+    print(f"Downloading radar image from {image_url}...")
+    response = requests.get(image_url, stream=True)
     if response.status_code == 200:
         with open(save_path, "wb") as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
-        logging.info(f"Radar image saved to {save_path}.")
+        print(f"Radar image saved to {save_path}.")
     else:
-        logging.error(f"Failed to download. Status code: {response.status_code}")
-
+        print(f"Failed to download. Status code: {response.status_code}")
 
 def load_image_as_cv2(image_path: str) -> np.ndarray:
     """
     Loads an image from disk and converts it to an OpenCV-compatible numpy array (BGR).
-    :param image_path: Path to the image on disk.
-    :return: OpenCV-compatible image (numpy array in BGR format).
     """
-    with Image.open(image_path) as pil_image:
-        # Convert PIL image to a numpy array (RGB)
-        image_np = np.array(pil_image)
-    # Convert RGB to BGR
-    return cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
-
+    pil_image = Image.open(image_path)
+    image_np = np.array(pil_image)  # RGB
+    image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
+    return image_bgr
 
 def detect_supercell(image_bgr: np.ndarray, model, conf_threshold: float = 0.25):
     """
-    Runs the YOLO object detection model on a radar image to locate supercells.
-    :param image_bgr: The image in BGR format (OpenCV).
-    :param model: A YOLO model (e.g., YOLOv5 or YOLOv8).
-    :param conf_threshold: Minimum confidence threshold to keep detections.
-    :return: detection results (bounding boxes, confidences, class IDs, etc.)
+    Runs the YOLO model on a radar image to locate supercells (or any target classes).
     """
-    # Convert BGR to RGB since YOLO models typically expect RGB
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-
-    # Run inference using the YOLO model
+    # YOLO inference
     results = model(image_rgb, size=640)
 
-    # Filter results by confidence threshold
+    # Filter by confidence
     filtered = []
     for *box, conf, cls_id in results.xyxy[0].cpu().numpy():
         if conf >= conf_threshold:
             filtered.append((box, conf, cls_id))
-
     return filtered
 
-
-def draw_detections(image_bgr: np.ndarray, detections, class_names: dict) -> np.ndarray:
+def draw_detections(image_bgr: np.ndarray, detections, class_names: dict):
     """
-    Draw bounding boxes for each detected supercell (or other classes) on the image.
-    :param image_bgr: The image (BGR).
-    :param detections: List of detections (box, confidence, class).
-    :param class_names: Dictionary mapping class IDs to class labels.
-    :return: image with drawn boxes.
+    Draws bounding boxes for each detection on the radar image.
     """
     for (box, conf, cls_id) in detections:
         x1, y1, x2, y2 = map(int, box)
         label = class_names.get(int(cls_id), "Unknown")
-        # Color-code bounding boxes based on label
-        if label == "supercell":
-            color = (0, 0, 255)  # Red
-        elif label == "storm":
-            color = (0, 255, 255)  # Yellow
-        else:
-            color = (255, 0, 0)    # Blue
-        
+        color = (0, 0, 255) if label == "supercell" else (255, 0, 0)
         cv2.rectangle(image_bgr, (x1, y1), (x2, y2), color, 2)
         cv2.putText(
             image_bgr,
@@ -98,75 +117,63 @@ def draw_detections(image_bgr: np.ndarray, detections, class_names: dict) -> np.
         )
     return image_bgr
 
-
 def main_loop():
     """
-    Continuously downloads the latest BOM radar image, runs supercell detection,
-    and saves annotated images at a fixed time interval.
+    Continuously fetches the latest BOM radar image from IDR193.loop.shtml, 
+    runs supercell detection, and saves annotated images.
     """
-
-    # ---------------------------
-    # 1. SETUP - Modify as needed
-    # ---------------------------
-    radar_image_url = "https://example.com/path/to/bom_radar_image.png"
+    # URL for the IDR193 radar loop page
+    bom_loop_url = "http://www.bom.gov.au/products/IDR193.loop.shtml"
+    
+    # Output directory
     output_dir = "radar_images"
     os.makedirs(output_dir, exist_ok=True)
 
-    model_path = "yolo/best.pt"
+    # YOLO model info
+    model_path = "yolo/best.pt"  # replace with your model path
     class_names = {
         0: "supercell",
         1: "storm",
         2: "rainband",
     }
-
     conf_threshold = 0.30
-    scan_interval_seconds = 300  # e.g., 5 minutes
 
-    # ------------------------------------
-    # 2. LOAD MODEL (only once!)
-    # ------------------------------------
-    logging.info("Loading YOLO model...")
+    # Load YOLO model once
+    print("Loading YOLO model...")
     model = torch.hub.load('ultralytics/yolov5', 'custom', path=model_path, force_reload=True)
-    logging.info("YOLO model loaded.")
+    print("YOLO model loaded.")
 
-    # ------------------------------------
-    # 3. CONTINUOUS LOOP
-    # ------------------------------------
+    # Scan interval (e.g., 5 minutes)
+    scan_interval_seconds = 300
+
     while True:
         try:
-            timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            # 1. Scrape the BOM loop page for the latest image link
+            latest_image_url = scrape_bom_radar_image(bom_loop_url)
+            if not latest_image_url:
+                print("No valid image URL found; skipping this cycle.")
+            else:
+                # 2. Download it
+                timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                downloaded_image_path = os.path.join(output_dir, f"radar_{timestamp_str}.png")
+                annotated_image_path = os.path.join(output_dir, f"annotated_radar_{timestamp_str}.png")
+                
+                download_image(downloaded_image_path, latest_image_url)
 
-            downloaded_image_path = os.path.join(output_dir, f"radar_{timestamp_str}.png")
-            annotated_image_path = os.path.join(output_dir, f"annotated_radar_{timestamp_str}.png")
+                # 3. Detect supercells
+                image_bgr = load_image_as_cv2(downloaded_image_path)
+                detections = detect_supercell(image_bgr, model, conf_threshold)
 
-            # -----------------------
-            # Download the radar image
-            # -----------------------
-            download_bom_radar_image(downloaded_image_path, radar_image_url)
-
-            # -----------------------
-            # Load and run detection
-            # -----------------------
-            image_bgr = load_image_as_cv2(downloaded_image_path)
-            detections = detect_supercell(image_bgr, model, conf_threshold)
-
-            # -----------------------
-            # Draw detections
-            # -----------------------
-            image_with_boxes = draw_detections(image_bgr, detections, class_names)
-
-            # -----------------------
-            # Save the annotated image
-            # -----------------------
-            cv2.imwrite(annotated_image_path, image_with_boxes)
-            logging.info(f"Annotated image saved to {annotated_image_path}")
-
+                # 4. Draw bounding boxes
+                image_with_boxes = draw_detections(image_bgr, detections, class_names)
+                cv2.imwrite(annotated_image_path, image_with_boxes)
+                print(f"Annotated image saved to {annotated_image_path}")
+        
         except Exception as e:
-            logging.error(f"An error occurred: {e}", exc_info=True)
+            print(f"Error during cycle: {e}")
 
-        logging.info(f"Waiting {scan_interval_seconds} seconds until next scan...\n")
+        print(f"Waiting {scan_interval_seconds} seconds until next scan...\n")
         time.sleep(scan_interval_seconds)
-
 
 if __name__ == "__main__":
     main_loop()
