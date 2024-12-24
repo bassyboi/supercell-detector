@@ -8,20 +8,24 @@
 # Usage:
 #   1. Make this script executable:
 #        chmod +x install.sh
-#   2. Run the script:
+#   2. Run the script (CPU-only):
 #        ./install.sh
+#      Or to install GPU-enabled PyTorch (example: CUDA 11.8):
+#        ./install.sh gpu
 #
 # After completion, activate the environment with:
 #   source supercell_env/bin/activate
 #
-# Then you can run the supercell detection code in that environment.
+# Then run:
+#   python radar_supercell_detection.py
 
 # -- Settings --
 ENV_NAME="supercell_env"
-PYTHON_VERSION="python3"  # or "python", depending on your system
+PYTHON_VERSION="python3"  # or "python" depending on your system
+GPU_ARG="$1"              # if set to "gpu", will install GPU-enabled torch
 
 # Check if Python is installed
-if ! command -v $PYTHON_VERSION &> /dev/null
+if ! command -v "$PYTHON_VERSION" &> /dev/null
 then
     echo "Error: Python not found. Please install Python 3 and re-run."
     exit 1
@@ -29,7 +33,7 @@ fi
 
 # 1. Create a virtual environment
 echo "Creating Python virtual environment: $ENV_NAME"
-$PYTHON_VERSION -m venv $ENV_NAME
+"$PYTHON_VERSION" -m venv "$ENV_NAME"
 
 # 2. Activate the environment
 echo "Activating virtual environment..."
@@ -40,28 +44,37 @@ source "$ENV_NAME/bin/activate"
 echo "Upgrading pip..."
 pip install --upgrade pip
 
-# 4. Install PyTorch (CPU or GPU)
-#    Adjust this line according to your system’s CUDA version, if you have a GPU.
-#    For CPU-only:
-echo "Installing PyTorch (CPU-only)..."
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+# 4. Install PyTorch
+#    If the user passed "gpu", install a CUDA build.
+#    Adjust the CUDA version (cu118, cu117, etc.) to match your system.
+if [ "$GPU_ARG" == "gpu" ]; then
+  echo "Installing PyTorch (GPU with CUDA 11.8)..."
+  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+else
+  echo "Installing PyTorch (CPU-only)..."
+  pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+fi
 
 # 5. Install required Python packages
-echo "Installing ultralytics (for YOLO), OpenCV, Pillow, Requests, NumPy..."
-pip install ultralytics opencv-python pillow requests numpy
+#    - ultralytics: YOLO (v8)
+#    - opencv-python: For image processing
+#    - pillow, requests, numpy: Common libraries
+#    - beautifulsoup4, lxml: For HTML scraping (optional, but useful if scraping BOM pages)
+echo "Installing ultralytics (YOLO), OpenCV, Pillow, Requests, NumPy, BeautifulSoup..."
+pip install ultralytics opencv-python pillow requests numpy beautifulsoup4 lxml
 
-# 6. (Optional) If you want to use the YOLOv5 repo directly:
-# pip install git+https://github.com/ultralytics/yolov5.git@master
-
-# 7. Confirm everything is installed
+# 6. Confirm everything is installed
 echo "Verifying installations..."
 pip list
 
 echo ""
 echo "================================================="
 echo "Setup complete!"
-echo "To start using this environment, run:"
+echo ""
+echo "Activate the environment with:"
 echo "  source $ENV_NAME/bin/activate"
-echo "Then run:"
+echo ""
+echo "Then run your detection code, for example:"
 echo "  python radar_supercell_detection.py"
 echo "================================================="
+
