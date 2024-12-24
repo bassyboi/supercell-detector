@@ -1,112 +1,70 @@
 import os
-import re
-import time
-import requests
 import cv2
 import numpy as np
 from PIL import Image
 import torch
 import datetime
-from bs4 import BeautifulSoup
 
-# --- NEW IMPORTS FOR TKINTER FILE DIALOG ---
+# --- Imports for tkinter ---
 import tkinter as tk
 from tkinter import filedialog
 
-def scrape_bom_radar_image(url: str) -> str:
+def select_model_path() -> str:
     """
-    Scrapes the BOM radar loop page for the most recent radar image URL.
-    Returns the absolute URL to the image, or None if not found.
-    Includes basic error handling.
+    Opens a Tkinter file dialog to let the user select a .pt model file.
+    Returns the file path or an empty string if none selected.
     """
-    print(f"Scraping BOM radar loop page: {url}")
-    try:
-        response = requests.get(url, timeout=10)
-    except requests.exceptions.RequestException as e:
-        print(f"Request error while accessing {url}: {e}")
-        return None
-    
-    if response.status_code != 200:
-        print(f"Failed to access page. Status code: {response.status_code}")
-        return None
+    print("Opening file dialog to select the PyTorch model (.pt file)...")
+    root = tk.Tk()
+    root.withdraw()  # Hide the main Tkinter window
 
-    # Parse HTML
-    soup = BeautifulSoup(response.text, "html.parser")
-    
-    # Regex aims to find something like /radar/IDR193.T.202308100927.png
-    pattern = re.compile(r'(/radar/IDR193[^"]+\.png)')
-    
-    # We'll look for script tags containing references to "IDR193"
-    script_tags = soup.find_all("script")
-    found_images = []
-    for tag in script_tags:
-        if tag.string and "IDR193" in tag.string:
-            matches = pattern.findall(tag.string)
-            if matches:
-                found_images.extend(matches)
+    model_path = filedialog.askopenfilename(
+        title='Select PyTorch Model',
+        filetypes=[('PyTorch Model', '*.pt'), ('All Files', '*.*')]
+    )
+    root.destroy()
 
-    if not found_images:
-        print("No IDR193 image paths found in the page scripts.")
-        return None
-    
-    # The frames are often in chronological order; the last entry is usually the most recent
-    latest_path = found_images[-1]
-
-    # The BOM site usually uses relative paths like /radar/IDR193.T.yyyymmddHHMM.png
-    # Prepend domain if not already present
-    if latest_path.startswith("/"):
-        latest_url = f"http://www.bom.gov.au{latest_path}"
+    if model_path:
+        print(f"Selected model path: {model_path}")
     else:
-        # If it's absolute or something else
-        latest_url = latest_path
-    
-    print(f"Found latest radar image: {latest_url}")
-    return latest_url
+        print("No model file was selected.")
+    return model_path
 
-
-def download_image(save_path: str, image_url: str) -> bool:
+def select_local_image() -> str:
     """
-    Downloads an image from the provided URL to save_path.
-    Returns True if successful, False otherwise.
-    Includes basic error handling.
+    Opens a Tkinter file dialog to let the user select an image file.
+    Returns the file path or an empty string if none selected.
     """
-    if not image_url:
-        print("No image URL provided to download.")
-        return False
+    print("Opening file dialog to select an image...")
+    root = tk.Tk()
+    root.withdraw()
 
-    print(f"Downloading radar image from {image_url}...")
-    try:
-        response = requests.get(image_url, stream=True, timeout=10)
-    except requests.exceptions.RequestException as e:
-        print(f"Request error while downloading image: {e}")
-        return False
+    image_path = filedialog.askopenfilename(
+        title='Select Local Image',
+        filetypes=[
+            ('Image files', '*.jpg *.jpeg *.png *.bmp'),
+            ('All Files', '*.*')
+        ]
+    )
+    root.destroy()
 
-    if response.status_code == 200:
-        try:
-            with open(save_path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            print(f"Radar image saved to {save_path}.")
-            return True
-        except IOError as e:
-            print(f"Error writing file {save_path}: {e}")
-            return False
+    if image_path:
+        print(f"Selected image path: {image_path}")
     else:
-        print(f"Failed to download. Status code: {response.status_code}")
-        return False
-
+        print("No image was selected.")
+    return image_path
 
 def load_image_as_cv2(image_path: str) -> np.ndarray:
     """
     Loads an image from disk and converts it to an OpenCV-compatible numpy array (BGR).
-    If the image cannot be loaded, returns None.
+    Returns None if load fails.
     """
     if not os.path.exists(image_path):
         print(f"File does not exist: {image_path}")
         return None
 
     try:
-        pil_image = Image.open(image_path)
+        pil_image = Image.open(image_path).convert('RGB')
         image_np = np.array(pil_image)  # RGB
         image_bgr = cv2.cvtColor(image_np, cv2.COLOR_RGB2BGR)
         return image_bgr
@@ -114,10 +72,9 @@ def load_image_as_cv2(image_path: str) -> np.ndarray:
         print(f"Error loading image {image_path}: {e}")
         return None
 
-
-def detect_supercell(image_bgr: np.ndarray, model, conf_threshold: float = 0.25):
+def detect_objects(image_bgr: np.ndarray, model, conf_threshold: float = 0.25):
     """
-    Runs the YOLO model on a radar image to locate targets (echo hook, shower, storm cell, supercell).
+    Runs the YOLO model on an image to locate targets.
     Returns a list of detections or an empty list if none are found.
     """
     if image_bgr is None:
@@ -126,24 +83,22 @@ def detect_supercell(image_bgr: np.ndarray, model, conf_threshold: float = 0.25)
 
     # Convert BGR to RGB
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
-
     try:
         # YOLO inference
         results = model(image_rgb, size=640)
         detections = []
         for *box, conf, cls_id in results.xyxy[0].cpu().numpy():
             if conf >= conf_threshold:
-                detections.append((box, conf, cls_id))
+                detections.append((box, conf, int(cls_id)))
         return detections
     except Exception as e:
         print(f"Error during detection: {e}")
         return []
 
-
 def draw_detections(image_bgr: np.ndarray, detections, class_names: dict):
     """
-    Draws bounding boxes for each detection on the radar image.
-    Returns the annotated image. If an error occurs, returns original image_bgr.
+    Draw bounding boxes for each detection on the image.
+    Returns the annotated image. If an error occurs, returns the original image.
     """
     if image_bgr is None or not detections:
         return image_bgr
@@ -151,9 +106,14 @@ def draw_detections(image_bgr: np.ndarray, detections, class_names: dict):
     try:
         for (box, conf, cls_id) in detections:
             x1, y1, x2, y2 = map(int, box)
-            label = class_names.get(int(cls_id), "Unknown")
-            
-            # Assign a color for each label (you can customize as needed)
+            label = class_names.get(cls_id, "Unknown")
+
+            # Color-coding example
+            # Adjust as desired for your 4 classes:
+            #   0: "echo hook"
+            #   1: "shower"
+            #   2: "storm cell"
+            #   3: "supercell"
             if label == "echo hook":
                 color = (255, 255, 0)   # cyan
             elif label == "shower":
@@ -180,114 +140,76 @@ def draw_detections(image_bgr: np.ndarray, detections, class_names: dict):
         print(f"Error drawing detections: {e}")
         return image_bgr
 
-
-def get_model_path_via_tkinter() -> str:
+def run_local_detection():
     """
-    Opens a Tkinter file dialog to let the user select a .pt model file.
-    Returns the file path or an empty string if none selected.
+    1. Prompts the user to pick a YOLO model (.pt file)
+    2. Prompts the user to pick a local image
+    3. Loads and runs detection
+    4. Draws bounding boxes
+    5. Saves the annotated image
     """
-    print("Opening file dialog to select the PyTorch model (.pt file)...")
-    root = tk.Tk()
-    root.withdraw()  # Hide the main Tkinter window
-
-    model_path = filedialog.askopenfilename(
-        title='Select PyTorch Model',
-        filetypes=[('PyTorch Model', '*.pt'), ('All Files', '*.*')]
-    )
-    root.destroy()
-
-    if model_path:
-        print(f"Selected model path: {model_path}")
-    else:
-        print("No model file was selected.")
-
-    return model_path
-
-
-def main_loop():
-    """
-    Continuously fetches the latest BOM radar image from IDR193.loop.shtml, 
-    runs detection on the classes:
-        - echo hook
-        - shower
-        - storm cell
-        - supercell
-    and saves annotated images.
-    Incorporates error handling and uses tkinter to select a .pt model.
-    """
-    # URL for the IDR193 radar loop page
-    bom_loop_url = "http://www.bom.gov.au/products/IDR193.loop.shtml"
-    
-    # Output directory
-    output_dir = "radar_images"
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Ask the user to select a YOLO PyTorch model file
-    model_path = get_model_path_via_tkinter()
+    # Ask user to select a YOLO .pt model
+    model_path = select_model_path()
     if not model_path:
-        print("No model path provided. Exiting.")
+        print("No model selected. Exiting.")
         return
     
-    # Define your class names for the 4 classes
+    # Example class names for your 4 classes
     class_names = {
         0: "echo hook",
         1: "shower",
         2: "storm cell",
-        3: "supercell",
+        3: "supercell"
     }
+
     conf_threshold = 0.30
 
-    # Load YOLO model once
+    # Load YOLO model
     print("Loading YOLO model...")
     try:
-        # Using YOLOv5 from ultralytics
         model = torch.hub.load(
-            'ultralytics/yolov5', 
-            'custom', 
-            path=model_path, 
-            force_reload=True
+            'ultralytics/yolov5',
+            'custom',
+            path=model_path,
+            force_reload=True  # Force refresh in case of caching issues
         )
         print("YOLO model loaded.")
     except Exception as e:
         print(f"Failed to load model from {model_path}: {e}")
         return
 
-    # Scan interval (e.g., 5 minutes)
-    scan_interval_seconds = 300
+    # Ask user to select a local image
+    image_path = select_local_image()
+    if not image_path:
+        print("No image selected. Exiting.")
+        return
+    
+    # Prepare output directory
+    output_dir = "local_images"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Load image as OpenCV
+    image_bgr = load_image_as_cv2(image_path)
+    if image_bgr is None:
+        print("Could not load image data. Exiting.")
+        return
 
-    while True:
-        try:
-            # 1. Scrape the BOM loop page for the latest image link
-            latest_image_url = scrape_bom_radar_image(bom_loop_url)
-            if not latest_image_url:
-                print("No valid image URL found; skipping this cycle.")
-            else:
-                # 2. Download the image
-                timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                downloaded_image_path = os.path.join(output_dir, f"radar_{timestamp_str}.png")
-                annotated_image_path = os.path.join(output_dir, f"annotated_radar_{timestamp_str}.png")
-                
-                success = download_image(downloaded_image_path, latest_image_url)
-                if success:
-                    # 3. Detect classes in the image
-                    image_bgr = load_image_as_cv2(downloaded_image_path)
-                    detections = detect_supercell(image_bgr, model, conf_threshold)
-
-                    # 4. Draw bounding boxes
-                    image_with_boxes = draw_detections(image_bgr, detections, class_names)
-                    if image_with_boxes is not None:
-                        try:
-                            cv2.imwrite(annotated_image_path, image_with_boxes)
-                            print(f"Annotated image saved to {annotated_image_path}")
-                        except Exception as e:
-                            print(f"Error saving annotated image: {e}")
-        
-        except Exception as e:
-            print(f"Unexpected error during cycle: {e}")
-
-        print(f"Waiting {scan_interval_seconds} seconds until next scan...\n")
-        time.sleep(scan_interval_seconds)
+    # Run detection
+    detections = detect_objects(image_bgr, model, conf_threshold)
+    
+    # Draw bounding boxes
+    annotated_image = draw_detections(image_bgr, detections, class_names)
+    
+    # Save result
+    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_filename = f"annotated_{timestamp_str}.png"
+    output_path = os.path.join(output_dir, output_filename)
+    try:
+        cv2.imwrite(output_path, annotated_image)
+        print(f"Annotated image saved to {output_path}")
+    except Exception as e:
+        print(f"Error saving annotated image: {e}")
 
 
 if __name__ == "__main__":
-    main_loop()
+    run_local_detection()
